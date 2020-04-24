@@ -1,0 +1,116 @@
+# -*- coding: utf-8 -*-
+
+require 'active_support/core_ext'
+require 'open-uri'
+require 'tempfile'
+require 'nokogiri'
+require 'thor/group'
+
+class HatenaBookmarks
+  ENTRY_URL = 'http://b.hatena.ne.jp/entrylist'
+
+  def initialize(url)
+    @url = url
+    @bookmarks = []
+  end
+
+  def get(index)
+    if @bookmarks.size <= index
+      @bookmarks.concat get_bookmarks(index)
+    end
+
+    @bookmarks[index]
+  end
+
+  def get_bookmarks(index)
+    params = {
+      :sort => :count,
+      :url  => @url,
+      :of   => index
+    }
+    response = open "#{ENTRY_URL}?#{params.to_param}"
+    doc = Nokogiri::HTML.parse response.read
+    links = doc.css '.entry-body h3 a.entry-link'
+    links.map do |l|
+      {
+        :url   => l['href'],
+        :title => l['title'],
+      }
+    end
+  end
+end
+
+class XVideos
+  def initialize(url)
+    @url = url
+    parse @url
+  end
+
+  def parse(url)
+    response = open url
+    doc = Nokogiri::HTML.parse response.read
+    @title = doc.css('#channel_banner ~ * strong').first.text
+    @video_url = doc.css('#player').first.inner_html.match(/3GP\|\|(.+?)\|\|/)[1]
+  rescue
+    e = @title ? @title : $!
+    raise e
+  end
+
+  def download(dir)
+    basename = "#{@title}.mp4"
+    path = File.join dir, basename
+
+    if File.exists? path
+      puts "already exists: #{basename}"
+      return
+    end
+
+    puts "download start: #{basename}"
+    tempfile = Tempfile.new basename
+    video = open(@video_url)
+    tempfile.print video.read
+    FileUtils.move tempfile.path, path
+    puts "download completed: #{basename}"
+  rescue
+    puts "failed: #{$!.message}"
+  end
+
+  def download_async(dir)
+    Thread.new { download(dir) }
+  end
+end
+
+class Xxxdl < Thor::Group
+  XVIDEOS_URL = 'http://www.xvideos.com/'
+  DATA_DIR = File.expand_path './data'
+  MAX_DOWNLOAD_SIZE = 5
+
+  def setup
+    @bookmarks = HatenaBookmarks.new XVIDEOS_URL
+    @index = 0
+    @threads = []
+  end
+
+  def process
+    loop do
+      if @threads.size < MAX_DOWNLOAD_SIZE
+        download_next
+      end
+      @threads = @threads.select &:alive?
+
+      sleep 5
+    end
+  end
+
+  private
+  def download_next
+    bookmark = @bookmarks.get @index
+    @index += 1
+    xvideos = XVideos.new bookmark[:url]
+    @threads << xvideos.download_async(DATA_DIR)
+  rescue
+    puts "failed: #{$!.message}"
+  end
+end
+
+Xxxdl.start
